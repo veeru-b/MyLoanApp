@@ -67,9 +67,13 @@ function calcLoanStatus(loan, payments) {
   const totalPaid = loanPayments.reduce((s, p) => s + p.amount, 0);
   const elapsed = daysDiff(loan.startDate, today());
   const remaining = rule.loanAmount - totalPaid;
-  const overdue = elapsed > rule.days;
+  // const overdue = elapsed > rule.days;
+  // const daysOver = overdue ? elapsed - rule.days : 0;
+  // const penaltyAccrued = daysOver * rule.penalty;
+  const isPaidOff = remaining <= 0;
+  const overdue = !isPaidOff && elapsed > rule.days;
   const daysOver = overdue ? elapsed - rule.days : 0;
-  const penaltyAccrued = daysOver * rule.penalty;
+  const penaltyAccrued = overdue ? daysOver * rule.penalty : 0;
   const totalDue = Math.max(0, remaining + penaltyAccrued);
   const progress = Math.min(100, (totalPaid / rule.loanAmount) * 100);
   const daysLeft = Math.max(0, rule.days - elapsed);
