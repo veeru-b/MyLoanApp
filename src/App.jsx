@@ -9,7 +9,6 @@ const JSONBIN_BIN_ID = "6a1baca421f9ee59d29fdd22";
 const JSONBIN_API_KEY = "$2a$10$Z8Fo5H2LqszqZqv0e.g3Gu1gGlshI4g6aKfOk5Hp3VL/gVXpqqMwG";
 const JSONBIN_BASE = "https://api.jsonbin.io/v3/b";
 
-
 // Login credentials — change as needed
 const ADMIN_USERS = [
   { username: "admin", password: "1234" },
@@ -347,7 +346,7 @@ function LoginPage({ onLogin }) {
             <label className="login-label">Password</label>
             <input className="login-input" type="password" placeholder="••••" value={pass} onChange={e => setPass(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
           </div>
-          <button className="login-btn" onClick={submit}>Get In →</button>
+          <button className="login-btn" onClick={submit}>Sign In →</button>
           {err && <div className="login-err">{err}</div>}
         </div>
         {/* <div style={{ marginTop: 40, fontSize: 11, color: "#ccc" }}>Default: admin / 1234</div> */}
@@ -419,22 +418,35 @@ function DashTab({ data, totalInvested, totalDisbursed, totalCollected, totalInt
 
       {investors.length > 0 && (() => {
         const totalInv = investors.reduce((s, i) => s + i.amount, 0) || 1;
-        // Interest booked = total repayable amount minus total cash disbursed across all loans
-        // This is the real profit already locked in from giving out loans
         const loans = data.loans || [];
+        const paymentsArr = data.payments || [];
+        // Total interest booked = sum of (repayable - disbursed) across all loans — exact, no rounding
         const interestBooked = loans.reduce((s, l) => {
           const r = getLoanRule(l.requestedAmount);
           return s + (r.loanAmount - r.disburse);
         }, 0);
-        // Interest collected = portion of payments that are "profit" (prorated per loan)
-        const paymentsArr = data.payments || [];
-        const interestCollected = loans.reduce((s, l) => {
+        // Interest collected = prorated share of payments that represent interest, per loan — kept as exact float
+        const interestCollectedExact = loans.reduce((s, l) => {
           const r = getLoanRule(l.requestedAmount);
           const interestRatio = (r.loanAmount - r.disburse) / r.loanAmount;
           const loanPaid = paymentsArr.filter(p => p.loanId === l.id).reduce((t, p) => t + p.amount, 0);
           return s + Math.min(loanPaid * interestRatio, r.loanAmount - r.disburse);
         }, 0);
-        const interestCollectedSoFar = Math.round(interestCollected);
+        // Round only once at display level, keep exact value for distribution
+        const interestCollectedSoFar = Math.round(interestCollectedExact);
+        // Per-investor shares: use exact float math, assign remainder to last investor to avoid paisa diff
+        // shareOf(amount, idx) gives exact paise-accurate share
+        const getShares = (total) => {
+          const shares = investors.map((inv, i) => {
+            if (i === investors.length - 1) return null; // last gets remainder
+            return Math.round((inv.amount / totalInv) * total * 100) / 100;
+          });
+          const sumOthers = shares.slice(0, -1).reduce((s, v) => s + v, 0);
+          shares[investors.length - 1] = Math.round((total - sumOthers) * 100) / 100;
+          return shares;
+        };
+        const collectedShares = getShares(interestCollectedExact);
+        const bookedShares = getShares(interestBooked);
         return (
           <>
             <div className="sec-title">Partner Breakdown</div>
@@ -453,7 +465,10 @@ function DashTab({ data, totalInvested, totalDisbursed, totalCollected, totalInt
             </div>
             {investors.map((inv, i) => {
               const shareRatio = inv.amount / totalInv;
-              const myInterest = Math.floor(interestCollectedSoFar * shareRatio);
+              // Use pre-calculated remainder-adjusted shares — zero paisa difference guaranteed
+              const myCollected = collectedShares[i];
+              const myBooked = bookedShares[i];
+              const sharePercent = (shareRatio * 100).toFixed(2);
               return (
                 <div key={i} style={{ margin: "0 16px 8px", background: "#f9f9f9", border: "1px solid #ebebeb", borderRadius: 12, padding: "12px 14px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -463,17 +478,17 @@ function DashTab({ data, totalInvested, totalDisbursed, totalCollected, totalInt
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 700, fontSize: 14 }}>{fmt(inv.amount)}</div>
-                      <div style={{ fontSize: 11, color: "#999" }}>{(shareRatio * 100).toFixed(1)}% share</div>
+                      <div style={{ fontSize: 11, color: "#999" }}>{sharePercent}% share</div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 10, padding: "8px 10px", background: myInterest > 0 ? "#f0faf4" : "#f5f5f5", borderRadius: 8 }}>
+                  <div style={{ marginTop: 10, padding: "8px 10px", background: myCollected > 0 ? "#f0faf4" : "#f5f5f5", borderRadius: 8 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                       <div style={{ fontSize: 11, color: "#888" }}>🏆 Collected So Far</div>
-                      <div style={{ fontWeight: 700, fontSize: 14, color: myInterest > 0 ? "#1a7a3f" : "#bbb" }}>{fmt(myInterest)}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: myCollected > 0 ? "#1a7a3f" : "#bbb" }}>₹{myCollected.toFixed(2)}</div>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div style={{ fontSize: 11, color: "#888" }}>📋 Total Booked Share</div>
-                      <div style={{ fontWeight: 600, fontSize: 13, color: "#555" }}>{fmt(Math.floor(interestBooked * shareRatio))}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: "#555" }}>₹{myBooked.toFixed(2)}</div>
                     </div>
                   </div>
                 </div>
