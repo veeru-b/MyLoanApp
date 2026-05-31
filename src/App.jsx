@@ -668,7 +668,6 @@ ${loan.business ? `Shop/Business : ${loan.business}` : ""}
 
 📋 *Loan Details*
 • Total Borrowed  : ${fmt(s.rule.loanAmount)}
-• Amount Given    : ${fmt(s.rule.disburse)}
 • Daily Payment   : ${fmt(s.rule.daily)}
 • Loan Start Date : ${startStr}
 • Last Due Date   : ${endDate}
