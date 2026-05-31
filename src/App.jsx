@@ -1014,8 +1014,8 @@ function LoginPage({ onLogin }) {
       <style>{css}</style>
       <div className="login-wrap">
         <div className="login-logo">💰</div>
-        <div className="login-title">MoneyFlow</div>
-        <div className="login-sub">Loan Management System</div>
+        <div className="login-title">BhaarathaFinance</div>
+        <div className="login-sub">Trusted Loan Management System</div>
         <div className="login-box">
           <div className="login-field">
             <label className="login-label">Username</label>
