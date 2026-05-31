@@ -19,8 +19,8 @@ const ADMIN_USERS = [
 const LOAN_RULES = {
   5000:  { disburse: 4500,  daily: 100, days: 50,  penalty: 300 },
   10000: { disburse: 9000,  daily: 100, days: 100, penalty: 300 },
-  20000: { disburse: 18000, daily: 100, days: 200, penalty: 300 },
-  30000: { disburse: 27000, daily: 150, days: 200, penalty: 300 },
+  20000: { disburse: 18000, daily: 200, days: 100, penalty: 300 },
+  30000: { disburse: 27000, daily: 300, days: 100, penalty: 300 },
 };
 const SAFETY_TARGET = 10000;
 
