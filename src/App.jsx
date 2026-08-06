@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import * as XLSX from 'xlsx';
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
 // Setup: go to jsonbin.io → sign up free → create bin with:
@@ -17,17 +18,17 @@ const ADMIN_USERS = [
 ];
 
 const LOAN_RULES = {
-  5000:  { disburse: 4500,  daily: 100, days: 50,  penalty: 300 },
-  10000: { disburse: 9000,  daily: 100, days: 100, penalty: 300 },
-  20000: { disburse: 18000, daily: 200, days: 100, penalty: 300 },
-  30000: { disburse: 27000, daily: 300, days: 100, penalty: 300 },
+  5000:  { disburse: 4500,  daily: 100, days: 50 },
+  10000: { disburse: 9000,  daily: 100, days: 100 },
+  20000: { disburse: 18000, daily: 200, days: 100 },
+  30000: { disburse: 27000, daily: 300, days: 100 },
 };
 const SAFETY_TARGET = 10000;
 
 function getLoanRule(amount) {
   const keys = Object.keys(LOAN_RULES).map(Number).sort((a, b) => a - b);
   for (const k of keys) if (amount <= k) return { loanAmount: k, ...LOAN_RULES[k] };
-  return { loanAmount: amount, disburse: Math.floor(amount * 0.9), daily: 150, days: 200, penalty: 300 };
+  return { loanAmount: amount, disburse: Math.floor(amount * 0.9), daily: 150, days: 200 };
 }
 function daysDiff(from, to) { return Math.floor((new Date(to) - new Date(from)) / 86400000); }
 function fmt(n) { return "₹" + Number(n || 0).toLocaleString("en-IN"); }
@@ -67,14 +68,12 @@ function calcLoanStatus(loan, payments) {
   const totalPaid = loanPayments.reduce((s, p) => s + p.amount, 0);
   const elapsed = daysDiff(loan.startDate, today());
   const remaining = rule.loanAmount - totalPaid;
-  // const overdue = elapsed > rule.days;
-  // const daysOver = overdue ? elapsed - rule.days : 0;
-  // const penaltyAccrued = daysOver * rule.penalty;
   const isPaidOff = remaining <= 0;
   const overdue = !isPaidOff && elapsed > rule.days;
   const daysOver = overdue ? elapsed - rule.days : 0;
-  const penaltyAccrued = overdue ? daysOver * rule.penalty : 0;
-  const totalDue = Math.max(0, remaining + penaltyAccrued);
+  // Penalty amount removed: only indicate delayed days (no monetary penalty)
+  const penaltyAccrued = 0;
+  const totalDue = Math.max(0, remaining);
   const progress = Math.min(100, (totalPaid / rule.loanAmount) * 100);
   const daysLeft = Math.max(0, rule.days - elapsed);
   return { rule, totalPaid, remaining, elapsed, overdue, daysOver, penaltyAccrued, totalDue, progress, daysLeft, loanPayments, closed: remaining <= 0 };
@@ -299,6 +298,7 @@ export default function App() {
         {tab === "new" && <NewLoanTab data={data} onSave={save} onDone={() => { load(); setTab("borrowers"); }} showToast={showToast} />}
         {tab === "borrowers" && <BorrowersTab data={data} onSave={save} showToast={showToast} onSelect={(l) => setDetailLoan(l)} filter={loanFilter} setFilter={setLoanFilter} />}
         {tab === "investors" && <InvestorsTab data={data} onSave={save} showToast={showToast} />}
+        {tab === "audit" && <AuditTab data={data} onSave={save} showToast={showToast} />}
         {tab === "safety" && <SafetyTab data={data} onSave={save} showToast={showToast} />}
 
         <nav className="nav">
@@ -307,6 +307,7 @@ export default function App() {
             { key: "new", label: "New", icon: <><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></> },
             { key: "borrowers", label: "People", icon: <><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></> },
             { key: "investors", label: "Invest", icon: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></> },
+            { key: "audit", label: "Audit", icon: <><path d="M3 3h18v4H3z"/><path d="M3 11h18v10H3z"/></> },
             { key: "safety", label: "Safety", icon: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></> },
           ].map(({ key, label, icon }) => (
             <button key={key} className={`nav-btn ${tab === key ? "active" : ""}`} onClick={() => { setTab(key); setDetailLoan(null); }}>
@@ -362,7 +363,9 @@ function LoginPage({ onLogin }) {
 // ─── DASHBOARD ──────────────────────────────────────────────────────────────
 function DashTab({ data, totalInvested, totalDisbursed, totalCollected, totalInterestBook, activeLoans, closedLoans, overdueLoans, availableCapital, investors, onSync, loading, onOverdueClick }) {
   const payments = data.payments || [];
+  const loans = data.loans || [];
   const capital = availableCapital;
+  const totalRemaining = loans.reduce((s, l) => s + Math.max(0, calcLoanStatus(l, payments).remaining), 0);
   const rotation = Math.round((totalCollected / Math.max(totalDisbursed, 1)) * 100);
 
   return (
@@ -379,9 +382,12 @@ function DashTab({ data, totalInvested, totalDisbursed, totalCollected, totalInt
           <div className="card-title" style={{ color: "#666" }}>Total Capital Pool</div>
           <div className="big-amt">{fmt(totalInvested)}</div>
           <div style={{ display: "flex", gap: 18, marginTop: 12 }}>
-            {[["Available", fmt(capital), "#4caf50"], ["Deployed", fmt(totalDisbursed), "#90caf9"], ["Collected", fmt(totalCollected), "#ffd54f"]].map(([k, v, c]) => (
+            {[["Available", fmt(capital), "#4caf50"], ["Deployed", fmt(totalDisbursed), "#90caf9"], ["Collected", fmt(totalCollected), "#ffd54f"], ["Remaining", fmt(totalRemaining), "#f06292"]].map(([k, v, c]) => (
               <div key={k}><div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>{k}</div><div style={{ fontWeight: 700, color: c, fontSize: 13 }}>{v}</div></div>
             ))}
+          </div>
+          <div style={{ fontSize: 11, color: "#ddd", marginTop: 10 }}>
+            Available = Total Invested − Deployed + Collected. Remaining = sum of unpaid principal across loans.
           </div>
         </div>
 
@@ -514,7 +520,7 @@ function DashTab({ data, totalInvested, totalDisbursed, totalCollected, totalInt
                     <div className="alert-title">{l.name} — {l.business || "—"}</div>
                     <span className="badge badge-red">{s.daysOver}d late</span>
                   </div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Penalty: {fmt(s.penaltyAccrued)} · Total Due: {fmt(s.totalDue)}</div>
+                  <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Late by: {s.daysOver}d · Total Due: {fmt(s.totalDue)}</div>
                 </div>
               );
             })}
@@ -680,8 +686,8 @@ ${loan.business ? `Shop/Business : ${loan.business}` : ""}
 • Total Paid      : ${fmt(s.totalPaid)}
 • Balance Due     : ${fmt(Math.max(0, s.remaining))}
 • Progress        : ${s.progress.toFixed(0)}%
-${s.penaltyAccrued > 0 ? `• Penalty Accrued : ${fmt(s.penaltyAccrued)}
-• Total Due (incl. penalty) : ${fmt(s.totalDue)}` : "• No penalty — on track! ✅"}
+${s.daysOver > 0 ? `• Overdue by : ${s.daysOver} days
+• Total Due : ${fmt(s.totalDue)}` : "• No penalty — on track! ✅"}
 
 ${s.closed ? "✅ Loan is fully repaid. Thank you!" : s.overdue ? `⚠️ Loan overdue by ${s.daysOver} days. Please clear dues at earliest.` : `⏳ ${s.daysLeft} days remaining. Keep paying daily!`}
 
@@ -730,7 +736,7 @@ function BorrowerDetail({ loan, payments, onBack, onSave, data, showToast }) {
 
       <div className="page-pad">
         <div className="grid2" style={{ gap: 8, marginBottom: 12 }}>
-          {[["Disbursed", fmt(s.rule.disburse), "#1565c0"], ["Must Repay", fmt(s.rule.loanAmount), "#111"], ["Paid So Far", fmt(s.totalPaid), "#1a7a3f"], ["Remaining", fmt(Math.max(0, s.remaining)), "#856700"], ["Penalty", fmt(s.penaltyAccrued), "#c0392b"], ["Total Due", fmt(s.totalDue), s.totalDue > 0 ? "#c0392b" : "#1a7a3f"]].map(([k, v, c]) => (
+          {[["Disbursed", fmt(s.rule.disburse), "#1565c0"], ["Must Repay", fmt(s.rule.loanAmount), "#111"], ["Paid So Far", fmt(s.totalPaid), "#1a7a3f"], ["Remaining", fmt(Math.max(0, s.remaining)), "#856700"], ["Delayed", `${s.daysOver}d`, "#c0392b"], ["Total Due", fmt(s.totalDue), s.totalDue > 0 ? "#c0392b" : "#1a7a3f"]].map(([k, v, c]) => (
             <div key={k} className="stat-card"><div className="stat-label">{k}</div><div className="stat-val" style={{ color: c, fontSize: 15 }}>{v}</div></div>
           ))}
         </div>
@@ -824,6 +830,30 @@ function InvestorsTab({ data, onSave, showToast }) {
   const [saving, setSaving] = useState(false);
   const investors = data.investors || [];
   const total = investors.reduce((s, i) => s + i.amount, 0);
+  const paymentsArr = data.payments || [];
+  const loans = data.loans || [];
+  const totalCollectedLocal = paymentsArr.reduce((s, p) => s + p.amount, 0);
+  const reinvestments = data.reinvestments || [];
+  const totalReinvested = reinvestments.reduce((s, r) => s + r.amount, 0);
+  // Use profit (interest collected) as investable amount rather than raw collections
+  const interestCollectedExact = loans.reduce((s, l) => {
+    const r = getLoanRule(l.requestedAmount);
+    const interestRatio = (r.loanAmount - r.disburse) / r.loanAmount;
+    const loanPaid = paymentsArr.filter(p => p.loanId === l.id).reduce((t, p) => t + p.amount, 0);
+    return s + Math.min(loanPaid * interestRatio, r.loanAmount - r.disburse);
+  }, 0);
+  const availableForReinvest = Math.max(0, Math.round(interestCollectedExact) - totalReinvested);
+  const principalTransfers = data.principalTransfers || [];
+  const totalPrincipalUsed = principalTransfers.reduce((s, t) => s + t.amount, 0);
+  // Approximate principal collected = totalCollectedLocal - interestCollectedExact
+  const principalCollectedApprox = Math.max(0, totalCollectedLocal - Math.round(interestCollectedExact));
+  const availableCollectedPrincipal = Math.max(0, principalCollectedApprox - totalPrincipalUsed);
+  const [principalModal, setPrincipalModal] = useState(false);
+  const [principalInvestorId, setPrincipalInvestorId] = useState(investors.length ? investors[0].id : null);
+  const [principalAmt, setPrincipalAmt] = useState("");
+  const [reinvestModal, setReinvestModal] = useState(false);
+  const [reinvestFor, setReinvestFor] = useState(null);
+  const [reinvestAmt, setReinvestAmt] = useState("");
 
   async function submit() {
     if (!name.trim() || !amount || isNaN(parseInt(amount))) return showToast("Enter name and amount");
@@ -839,11 +869,62 @@ function InvestorsTab({ data, onSave, showToast }) {
     showToast("Investor removed");
   }
 
+  function getShares(totalInterest) {
+    const totalInv = investors.reduce((s, i) => s + i.amount, 0) || 1;
+    const shares = investors.map((inv, i) => {
+      if (i === investors.length - 1) return null;
+      return Math.round((inv.amount / totalInv) * totalInterest * 100) / 100;
+    });
+    const sumOthers = shares.slice(0, -1).reduce((s, v) => s + v, 0);
+    shares[investors.length - 1] = Math.round((totalInterest - sumOthers) * 100) / 100;
+    return shares;
+  }
+
+  // compute distributable interest per investor (exact float) — used to suggest reinvest amount
+  const collectedShares = getShares(interestCollectedExact);
+
+  async function openReinvest(inv, suggested) {
+    setReinvestFor(inv);
+    setReinvestAmt(String(Math.min(Math.round(suggested || 0), availableForReinvest)));
+    setReinvestModal(true);
+  }
+
+  async function doReinvest() {
+    const amt = parseInt(reinvestAmt || 0);
+    if (!reinvestFor || !amt || isNaN(amt) || amt <= 0) return showToast("Enter valid amount");
+    if (amt > availableForReinvest) return showToast("Not enough collected funds to reinvest");
+    const newInvs = investors.map(i => i.id === reinvestFor.id ? { ...i, amount: i.amount + amt } : i);
+    const rec = { id: Date.now().toString(), investorId: reinvestFor.id, amount: amt, date: today() };
+    await onSave({ ...data, investors: newInvs, reinvestments: [...reinvestments, rec] });
+    setReinvestModal(false); setReinvestFor(null); setReinvestAmt("");
+    showToast("Reinvested successfully");
+  }
+
+  async function openUseCollected() {
+    setPrincipalInvestorId(investors.length ? investors[0].id : null);
+    setPrincipalAmt("");
+    setPrincipalModal(true);
+  }
+
+  async function doUseCollected() {
+    const amt = parseInt(principalAmt || 0);
+    if (!principalInvestorId || !amt || isNaN(amt) || amt <= 0) return showToast("Enter valid amount");
+    if (amt > availableCollectedPrincipal) return showToast("Not enough collected principal to use");
+    const newInvs = investors.map(i => i.id === principalInvestorId ? { ...i, amount: i.amount + amt } : i);
+    const rec = { id: Date.now().toString(), investorId: principalInvestorId, amount: amt, date: today() };
+    await onSave({ ...data, investors: newInvs, principalTransfers: [...principalTransfers, rec] });
+    setPrincipalModal(false); setPrincipalInvestorId(null); setPrincipalAmt("");
+    showToast("Principal used to increase investor capital");
+  }
+
   return (
     <>
       <div className="header">
         <div><div className="header-title">Investors</div><div className="header-sub">Total: {fmt(total)}</div></div>
-        <button className="sync-btn" onClick={() => setShowForm(!showForm)}>{showForm ? "✕ Cancel" : "+ Add"}</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="sync-btn" onClick={openUseCollected}>Use Collected</button>
+          <button className="sync-btn" onClick={() => setShowForm(!showForm)}>{showForm ? "✕ Cancel" : "+ Add"}</button>
+        </div>
       </div>
 
       {showForm && (
@@ -867,6 +948,7 @@ function InvestorsTab({ data, onSave, showToast }) {
           <div style={{ fontSize: 11, color: "#666", marginBottom: 4 }}>Total Invested Capital</div>
           <div style={{ fontSize: 28, fontWeight: 700 }}>{fmt(total)}</div>
           <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>{investors.length} partner{investors.length !== 1 ? "s" : ""}</div>
+          <div style={{ fontSize: 12, color: "#ffd54f", marginTop: 6 }}>Available to Reinvest (profit): {fmt(availableForReinvest)}</div>
         </div>
       </div>
 
@@ -891,7 +973,10 @@ function InvestorsTab({ data, onSave, showToast }) {
                 {inv.note && <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>{inv.note}</div>}
                 <div className="row" style={{ marginTop: 8, fontSize: 11, color: "#bbb" }}>
                   <span>Joined: {new Date(inv.joinDate).toLocaleDateString("en-IN")}</span>
-                  <button onClick={() => removeInvestor(inv.id)} style={{ background: "none", border: "none", color: "#c0392b", cursor: "pointer", fontSize: 12, fontFamily: "Inter" }}>Remove</button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => openReinvest(inv, collectedShares[idx] || 0)} style={{ background: "none", border: "none", color: "#1a7a3f", cursor: "pointer", fontSize: 12, fontFamily: "Inter" }}>Reinvest</button>
+                    <button onClick={() => removeInvestor(inv.id)} style={{ background: "none", border: "none", color: "#c0392b", cursor: "pointer", fontSize: 12, fontFamily: "Inter" }}>Remove</button>
+                  </div>
                 </div>
                 <div className="pbar" style={{ height: 4, marginTop: 8 }}>
                   <div className="pfill" style={{ width: `${share}%`, background: "#111" }} />
@@ -902,6 +987,40 @@ function InvestorsTab({ data, onSave, showToast }) {
         </div>
       )}
       <div style={{ height: 16 }} />
+      {reinvestModal && reinvestFor && (
+        <div className="modal-bg" onClick={() => setReinvestModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Reinvest to {reinvestFor.name}</div>
+            <label className="inp-label">Available to reinvest</label>
+            <div style={{ marginBottom: 8, fontWeight: 700 }}>{fmt(availableForReinvest)}</div>
+            <label className="inp-label">Amount</label>
+            <input className="inp" type="number" placeholder="Enter amount" value={reinvestAmt} onChange={e => setReinvestAmt(e.target.value)} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-black" style={{ flex: 1 }} onClick={doReinvest}>Reinvest</button>
+              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setReinvestModal(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {principalModal && (
+        <div className="modal-bg" onClick={() => setPrincipalModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Use Collected Principal</div>
+            <label className="inp-label">Available collected principal</label>
+            <div style={{ marginBottom: 8, fontWeight: 700 }}>{fmt(availableCollectedPrincipal)}</div>
+            <label className="inp-label">Select Investor</label>
+            <select className="inp" value={principalInvestorId || ""} onChange={e => setPrincipalInvestorId(e.target.value)}>
+              {investors.map(inv => <option key={inv.id} value={inv.id}>{inv.name} — {fmt(inv.amount)}</option>)}
+            </select>
+            <label className="inp-label">Amount</label>
+            <input className="inp" type="number" placeholder="Enter amount" value={principalAmt} onChange={e => setPrincipalAmt(e.target.value)} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-black" style={{ flex: 1 }} onClick={doUseCollected}>Use Collected</button>
+              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setPrincipalModal(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -993,6 +1112,286 @@ function SafetyTab({ data, onSave, showToast }) {
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+// ─── AUDIT TAB ────────────────────────────────────────────────────────────
+function AuditTab({ data, onSave, showToast }) {
+  const [importMode, setImportMode] = useState("replace"); // replace | merge
+  const [fileErr, setFileErr] = useState("");
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [quarter, setQuarter] = useState(1);
+  const [auditType, setAuditType] = useState('all');
+  const [auditInvestor, setAuditInvestor] = useState('all');
+  const [auditFrom, setAuditFrom] = useState('');
+  const [auditTo, setAuditTo] = useState('');
+
+  function download(filename, text) {
+    const blob = new Blob([text], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportJSON() {
+    const filename = `loanapp_export_${new Date().toISOString().slice(0,10)}.json`;
+    download(filename, JSON.stringify(data, null, 2));
+    showToast("Exported JSON");
+  }
+
+  function exportCSV() {
+    // create CSV for loans, payments, investors
+    const toCSV = (arr, keys) => [keys.join(','), ...arr.map(r => keys.map(k => `"${(r[k]||"").toString().replace(/"/g,'""')}"`).join(',')).join('\n')].join('\n');
+    const loans = data.loans || [];
+    const payments = data.payments || [];
+    const investors = data.investors || [];
+    const zip = `----LOANS----\n${toCSV(loans, ['id','name','requestedAmount','startDate','business'])}\n\n----PAYMENTS----\n${toCSV(payments, ['id','loanId','amount','date','note'])}\n\n----INVESTORS----\n${toCSV(investors, ['id','name','amount','joinDate','phone'])}`;
+    const filename = `loanapp_export_${new Date().toISOString().slice(0,10)}.csv`;
+    const blob = new Blob([zip], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+    showToast('Exported CSV');
+  }
+
+  function handleImportFile(e) {
+    setFileErr("");
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const txt = ev.target.result;
+        const j = JSON.parse(txt);
+        if (importMode === 'replace') {
+          await onSave(j);
+          showToast('Data replaced from import');
+        } else {
+          // merge arrays with deduplication by id: loans, payments, investors, safetyDeposit
+          const nd = { ...data };
+          const dedupe = (existing = [], incoming = []) => {
+            const map = new Map(existing.map(i => [i.id, i]));
+            for (const it of incoming || []) if (it && it.id && !map.has(it.id)) map.set(it.id, it);
+            return Array.from(map.values());
+          };
+          nd.loans = dedupe(data.loans, j.loans);
+          nd.payments = dedupe(data.payments, j.payments);
+          nd.investors = dedupe(data.investors, j.investors);
+          nd.safetyDeposit = j.safetyDeposit || data.safetyDeposit;
+          nd.reinvestments = dedupe(data.reinvestments, j.reinvestments);
+          nd.principalTransfers = dedupe(data.principalTransfers, j.principalTransfers);
+          await onSave(nd);
+          showToast('Data merged from import (duplicates skipped)');
+        }
+      } catch (err) {
+        setFileErr('Invalid JSON file');
+      }
+    };
+    reader.readAsText(f);
+  }
+
+  async function exportXLSX() {
+    try {
+      const wb = XLSX.utils.book_new();
+      const loans = (data.loans || []).map(l=>({id:l.id,name:l.name,requestedAmount:l.requestedAmount,startDate:l.startDate,business:l.business}));
+      const payments = (data.payments || []).map(p=>({id:p.id,loanId:p.loanId,amount:p.amount,date:p.date,note:p.note}));
+      const investors = (data.investors || []).map(i=>({id:i.id,name:i.name,amount:i.amount,joinDate:i.joinDate,phone:i.phone,note:i.note}));
+      const reinvestments = (data.reinvestments || []).map(r=>({id:r.id,investorId:r.investorId,amount:r.amount,date:r.date}));
+      const principalTransfers = (data.principalTransfers || []).map(r=>({id:r.id,investorId:r.investorId,amount:r.amount,date:r.date}));
+      const opts = { header: ['id','name','requestedAmount','startDate','business'] };
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(loans, {header:['id','name','requestedAmount','startDate','business']}), 'Loans');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(payments, {header:['id','loanId','amount','date','note']}), 'Payments');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(investors, {header:['id','name','amount','joinDate','phone','note']}), 'Investors');
+      if (reinvestments.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reinvestments, {header:['id','investorId','amount','date']}), 'Reinvestments');
+      if (principalTransfers.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(principalTransfers, {header:['id','investorId','amount','date']}), 'PrincipalTransfers');
+      if (data.safetyDeposit) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([data.safetyDeposit], {header:['target','balance']}), 'SafetyDeposit');
+      const filename = `loanapp_export_${new Date().toISOString().slice(0,10)}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      showToast('Exported Excel');
+    } catch (err) { showToast('Excel export failed'); }
+  }
+
+  function handleImportXLSX(e) {
+    setFileErr("");
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const dataBuf = ev.target.result;
+        const wb = XLSX.read(dataBuf, { type: 'array' });
+        const j = {};
+        if (wb.SheetNames.includes('Loans')) j.loans = XLSX.utils.sheet_to_json(wb.Sheets['Loans']);
+        if (wb.SheetNames.includes('Payments')) j.payments = XLSX.utils.sheet_to_json(wb.Sheets['Payments']);
+        if (wb.SheetNames.includes('Investors')) j.investors = XLSX.utils.sheet_to_json(wb.Sheets['Investors']);
+        if (wb.SheetNames.includes('Reinvestments')) j.reinvestments = XLSX.utils.sheet_to_json(wb.Sheets['Reinvestments']);
+        if (wb.SheetNames.includes('PrincipalTransfers')) j.principalTransfers = XLSX.utils.sheet_to_json(wb.Sheets['PrincipalTransfers']);
+        if (wb.SheetNames.includes('SafetyDeposit')) j.safetyDeposit = XLSX.utils.sheet_to_json(wb.Sheets['SafetyDeposit'])[0];
+        // reuse JSON import logic
+        if (importMode === 'replace') {
+          await onSave(j);
+          showToast('Data replaced from Excel import');
+        } else {
+          // merge with dedupe
+          const nd = { ...data };
+          const dedupe = (existing = [], incoming = []) => {
+            const map = new Map(existing.map(i => [i.id, i]));
+            for (const it of incoming || []) if (it && it.id && !map.has(it.id)) map.set(it.id, it);
+            return Array.from(map.values());
+          };
+          nd.loans = dedupe(data.loans, j.loans);
+          nd.payments = dedupe(data.payments, j.payments);
+          nd.investors = dedupe(data.investors, j.investors);
+          nd.safetyDeposit = j.safetyDeposit || data.safetyDeposit;
+          nd.reinvestments = dedupe(data.reinvestments, j.reinvestments);
+          nd.principalTransfers = dedupe(data.principalTransfers, j.principalTransfers);
+          await onSave(nd);
+          showToast('Data merged from Excel import (duplicates skipped)');
+        }
+      } catch (err) {
+        setFileErr('Invalid Excel file');
+      }
+    };
+    reader.readAsArrayBuffer(f);
+  }
+
+  function quarterRange(y, q) {
+    const startMonth = (q - 1) * 3;
+    const start = new Date(y, startMonth, 1);
+    const end = new Date(y, startMonth + 3, 0, 23, 59, 59);
+    return [start, end];
+  }
+
+  function generateQuarterReport() {
+    const [s, e] = quarterRange(parseInt(year), parseInt(quarter));
+    const loans = data.loans || [];
+    const payments = data.payments || [];
+    const inRange = d => { const dt = new Date(d); return dt >= s && dt <= e; };
+    const disbursed = loans.filter(l => inRange(l.startDate)).reduce((sum, l) => sum + (getLoanRule(l.requestedAmount).disburse||0), 0);
+    const collected = payments.filter(p => inRange(p.date)).reduce((sum, p) => sum + p.amount, 0);
+    // interest collected in quarter
+    const interestCollected = loans.reduce((sum, l) => {
+      const r = getLoanRule(l.requestedAmount);
+      const loanPaidInRange = payments.filter(p => p.loanId === l.id && inRange(p.date)).reduce((t,p)=>t+p.amount,0);
+      return sum + Math.min(loanPaidInRange * ((r.loanAmount - r.disburse)/r.loanAmount), r.loanAmount - r.disburse);
+    }, 0);
+    const activeCount = loans.filter(l => { const st = new Date(l.startDate); return st <= e && calcLoanStatus(l, payments).closed === false; }).length;
+    const overdueCount = loans.filter(l => { const st = new Date(l.startDate); return st <= e && calcLoanStatus(l, payments).overdue; }).length;
+
+    const title = `Quarterly Report Q${quarter} ${year}`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:Arial;padding:24px;color:#111}h1{margin-bottom:8px}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{padding:8px;border:1px solid #ddd;text-align:left}</style></head><body><h1>${title}</h1><div>Period: ${s.toLocaleDateString()} — ${e.toLocaleDateString()}</div><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Total Disbursed</td><td>${fmt(disbursed)}</td></tr><tr><td>Total Collected</td><td>${fmt(collected)}</td></tr><tr><td>Interest Collected</td><td>${fmt(Math.round(interestCollected))}</td></tr><tr><td>Active Loans (end)</td><td>${activeCount}</td></tr><tr><td>Overdue Loans</td><td>${overdueCount}</td></tr></table><div style="margin-top:20px;font-size:12px;color:#666">Generated: ${new Date().toLocaleString()}</div><script>window.print()</script></body></html>`;
+    const w = window.open('about:blank');
+    if (w) { w.document.write(html); w.document.close(); }
+    showToast('Quarterly report opened — use Print to save as PDF');
+  }
+
+  // Audit list: recent reinvestments and principal transfers
+  const recentReinvest = (data.reinvestments || []).map(r => ({ ...r, type: 'reinvest' }));
+  const recentPrincipal = (data.principalTransfers || []).map(r => ({ ...r, type: 'principal' }));
+  const recentAll = [...recentReinvest, ...recentPrincipal].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 12);
+  // apply filters
+  const filteredAll = recentAll.filter(r => {
+    if (auditType !== 'all' && r.type !== auditType) return false;
+    if (auditInvestor !== 'all' && r.investorId !== auditInvestor) return false;
+    if (auditFrom) { if (new Date(r.date) < new Date(auditFrom)) return false; }
+    if (auditTo) { if (new Date(r.date) > new Date(auditTo + 'T23:59:59')) return false; }
+    return true;
+  });
+
+  function exportAuditCSV(rows) {
+    const keys = ['id','type','investorId','amount','date'];
+    const csv = [keys.join(','), ...rows.map(r => keys.map(k => `"${((r[k]||'')+'').toString().replace(/"/g,'""')}"`).join(',')).join('\n')].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `audit_${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
+    showToast('Audit exported (CSV)');
+  }
+
+  function exportAuditXLSX(rows) {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Audit');
+    XLSX.writeFile(wb, `audit_${new Date().toISOString().slice(0,10)}.xlsx`);
+    showToast('Audit exported (Excel)');
+  }
+
+  return (
+    <>
+      <div className="header"><div className="header-title">Audit</div><div className="header-sub">Export / Import / Reports</div></div>
+      <div className="page-pad">
+        <div className="card">
+          <div className="card-title">Export Data</div>
+          <div style={{ display:'flex', gap:8, marginTop:8 }}>
+            <button className="btn btn-black" onClick={exportJSON}>Export JSON</button>
+            <button className="btn btn-outline" onClick={exportCSV}>Export CSV</button>
+            <button className="btn btn-outline" onClick={exportXLSX}>Export Excel (.xlsx)</button>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Import Data</div>
+          <div style={{ marginTop:8 }}>
+            <label style={{ fontSize:12, color:'#666' }}>Mode:</label>
+            <div style={{ display:'flex', gap:8, marginTop:6 }}>
+              <label><input type="radio" checked={importMode==='replace'} onChange={()=>setImportMode('replace')} /> Replace</label>
+              <label><input type="radio" checked={importMode==='merge'} onChange={()=>setImportMode('merge')} /> Merge</label>
+            </div>
+            <input style={{ marginTop:10 }} type="file" accept="application/json" onChange={handleImportFile} />
+            <div style={{ marginTop:8 }}>
+              <label style={{ fontSize:12, color:'#666' }}>Or import Excel (.xlsx):</label>
+              <input style={{ marginTop:6 }} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleImportXLSX} />
+            </div>
+            {fileErr && <div style={{ color:'#c0392b', marginTop:6 }}>{fileErr}</div>}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Quarterly Report (PDF)</div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:8, alignItems:'center' }}>
+            <select className="inp" value={quarter} onChange={e=>setQuarter(Number(e.target.value))} style={{ width:120, minWidth:120 }}>
+              <option value={1}>Q1</option>
+              <option value={2}>Q2</option>
+              <option value={3}>Q3</option>
+              <option value={4}>Q4</option>
+            </select>
+            <input className="inp" type="number" value={year} onChange={e=>setYear(Number(e.target.value))} style={{ width:120, minWidth:120 }} />
+            <button className="btn btn-black" onClick={generateQuarterReport}>Generate PDF</button>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-title">Audit Log</div>
+          <div style={{ marginTop:8 }}>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8, alignItems:'center' }}>
+              <select className="inp" value={auditType} onChange={e=>setAuditType(e.target.value)} style={{ width:140, minWidth:140 }}>
+                <option value="all">All</option>
+                <option value="reinvest">Reinvest</option>
+                <option value="principal">Principal Transfer</option>
+              </select>
+              <select className="inp" value={auditInvestor} onChange={e=>setAuditInvestor(e.target.value)} style={{ width:180, minWidth:180 }}>
+                <option value="all">All Investors</option>
+                {(data.investors||[]).map(i=> <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8, alignItems:'center' }}>
+              <input className="inp" type="date" value={auditFrom} onChange={e=>setAuditFrom(e.target.value)} style={{ width:140, minWidth:140 }} />
+              <input className="inp" type="date" value={auditTo} onChange={e=>setAuditTo(e.target.value)} style={{ width:140, minWidth:140 }} />
+            </div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+              <button className="btn btn-outline" onClick={()=>exportAuditCSV(filteredAll)}>Export CSV</button>
+              <button className="btn btn-outline" onClick={()=>exportAuditXLSX(filteredAll)}>Export XLSX</button>
+            </div>
+            {filteredAll.length === 0 ? <div className="empty">No audit records</div> : filteredAll.map(r => {
+              const investor = (data.investors||[]).find(i => i.id === r.investorId) || {};
+              return (
+                <div key={r.id} style={{ display:'flex', justifyContent:'space-between', gap:16, padding:'8px 0', borderBottom:'1px solid #f0f0f0', flexWrap:'wrap', alignItems:'center' }}>
+                  <div style={{ minWidth:0, flex:'1 1 240px' }}>
+                    <div style={{ fontWeight:700, wordBreak:'break-word' }}>{r.type === 'reinvest' ? 'Reinvest' : 'Principal Transfer'}</div>
+                    <div style={{ fontSize:12, color:'#666', wordBreak:'break-word' }}>{investor.name || r.investorId} · {new Date(r.date).toLocaleString()}</div>
+                  </div>
+                  <div style={{ fontWeight:700, whiteSpace:'nowrap' }}>{fmt(r.amount)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </>
   );
 }
